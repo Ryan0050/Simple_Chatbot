@@ -1,8 +1,6 @@
 import streamlit as st
 import requests
-import json
 import os
-from datetime import datetime
 import google.generativeai as genai
 
 st.set_page_config(
@@ -85,7 +83,6 @@ def summarize_conversation(messages, model_type, **kwargs):
     if not messages:
         return "No conversation to summarize."
     
-    # Prepare conversation text
     conversation_text = ""
     for msg in messages:
         role = "User" if msg["role"] == "user" else "Assistant"
@@ -104,10 +101,12 @@ Summary should include:
 
 Keep the summary clear and informative."""
 
+    summary_messages = [{"role": "user", "content": summary_prompt}]
+
     if model_type.startswith("gemini"):
-        return call_gemini_api(messages, **kwargs)
+        return call_gemini_api(summary_messages, **kwargs)
     else:
-        return call_llama3_api(messages, **kwargs)
+        return call_llama3_api(summary_messages, **kwargs)
 
 gemini_key, groq_key = configure_apis()
 
