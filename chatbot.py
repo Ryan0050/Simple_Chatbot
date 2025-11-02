@@ -13,17 +13,39 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "selected_model" not in st.session_state:
     st.session_state.selected_model = "gemini-1.5-flash"
+if "bot_behavior" not in st.session_state:
+    st.session_state.bot_behavior = "Default"
+if "bot_persona" not in st.session_state:
+    st.session_state.bot_persona = ""
 
 def configure_apis():
     gemini_api_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if gemini_api_key:
+        genai.configure(api_key=gemini_api_key)
     
     groq_api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
     
     return gemini_api_key, groq_api_key
 
-def call_gemini_api(messages, temperature=0.7, top_p=0.9, top_k=40, max_tokens=1000):
+def construct_system_prompt():
+    behavior = st.session_state.get("bot_behavior", "Default")
+    persona = st.session_state.get("bot_persona", "").strip()
+    
+    prompts = []
+    if behavior != "Default":
+        prompts.append(f"Your response style must be: {behavior.lower()}.")
+    
+    if persona:
+        prompts.append(f"You must adhere to the following persona or context: {persona}")
+        
+    return " ".join(prompts)
+
+def call_gemini_api(messages, system_prompt="", temperature=0.7, top_p=0.9, top_k=40, max_tokens=1000):
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel(
+            'gemini-1.5-flash',
+            system_instruction=system_prompt
+        )
         
         generation_config = genai.types.GenerationConfig(
             temperature=temperature,
@@ -32,21 +54,23 @@ def call_gemini_api(messages, temperature=0.7, top_p=0.9, top_k=40, max_tokens=1
             max_output_tokens=max_tokens,
         )
         
-        conversation_text = ""
+        gemini_history = []
         for msg in messages:
-            role = "User" if msg["role"] == "user" else "Assistant"
-            conversation_text += f"{role}: {msg['content']}\n\n"
+            role = "model" if msg["role"] == "assistant" else "user"
+            gemini_history.append({"role": role, "parts": [msg["content"]]})
         
         response = model.generate_content(
-            conversation_text,
+            gemini_history,
             generation_config=generation_config
         )
         
         return response.text
     except Exception as e:
+        if "api_key" in str(e).lower():
+            return "Error: Gemini API key is invalid or not set."
         return f"Error calling Gemini API: {str(e)}"
 
-def call_llama3_api(messages, temperature=0.7, top_p=1.0, max_tokens=1000):
+def call_llama3_api(messages_with_system, temperature=0.7, top_p=1.0, max_tokens=1000):
     try:
         groq_api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
         if not groq_api_key:
@@ -58,8 +82,8 @@ def call_llama3_api(messages, temperature=0.7, top_p=1.0, max_tokens=1000):
         }
         
         data = {
-            "model": "llama3-8b-8192",
-            "messages": messages,
+            "model": "llama-3.1-8b-instant",
+            "messages": messages_with_system,
             "temperature": temperature,
             "top_p": top_p,
             "max_tokens": max_tokens
@@ -104,7 +128,7 @@ Keep the summary clear and informative."""
     summary_messages = [{"role": "user", "content": summary_prompt}]
 
     if model_type.startswith("gemini"):
-        return call_gemini_api(summary_messages, **kwargs)
+        return call_gemini_api(summary_messages, system_prompt="", **kwargs)
     else:
         return call_llama3_api(summary_messages, **kwargs)
 
@@ -116,7 +140,7 @@ with st.sidebar:
     st.subheader("Model Selection")
     model_options = {
         "Gemini 1.5 Flash": "gemini-1.5-flash",
-        "Llama 3 8B": "llama3-8b-8192"
+        "Llama 3.1 8B": "llama-3.1-8b-instant"
     }
     
     selected_model_name = st.selectbox(
@@ -127,46 +151,47 @@ with st.sidebar:
     st.session_state.selected_model = model_options[selected_model_name]
     st.markdown("")
 
+    st.subheader("Bot Personality")
+    
+    behavior_options = ["Default", "Professional", "Enthusiastic", "Humorous", "Sarcastic", "Brief and to the point"]
+    st.session_state.bot_behavior = st.selectbox(
+        "Select Bot Behavior:",
+        options=behavior_options,
+        key="bot_behavior_select"
+    )
+    
+    st.session_state.bot_persona = st.text_area(
+        "Custom Persona / Context:",
+        placeholder="e.g., You are a senior software engineer...",
+        height=100,
+        key="bot_persona_text"
+    )
+    st.markdown("")
+
     with st.expander("Advanced Settings"):
         st.subheader("Model Parameters")
         
         temperature = st.slider(
-            "Temperature",
-            min_value=0.0,
-            max_value=2.0,
-            value=0.7,
-            step=0.1,
+            "Temperature", 0.0, 2.0, 0.7, 0.1,
             help="Controls randomness. Lower = more focused, Higher = more creative"
         )
         st.session_state.temperature = temperature
         
         top_p = st.slider(
-            "Top-P",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.9,
-            step=0.1,
+            "Top-P", 0.0, 1.0, 0.9, 0.1,
             help="Nucleus sampling. Controls diversity of responses"
         )
         st.session_state.top_p = top_p
         
         if st.session_state.selected_model.startswith("gemini"):
             top_k = st.slider(
-                "Top-K",
-                min_value=1,
-                max_value=100,
-                value=40,
-                step=1,
+                "Top-K", 1, 100, 40, 1,
                 help="Limits vocabulary to top K tokens"
             )
             st.session_state.top_k = top_k
         
         max_tokens = st.slider(
-            "Max Tokens",
-            min_value=100,
-            max_value=4000,
-            value=1000,
-            step=100,
+            "Max Tokens", 100, 4000, 1000, 100,
             help="Maximum length of response"
         )
         st.session_state.max_tokens = max_tokens
@@ -229,17 +254,26 @@ if prompt := st.chat_input("Type your message here..."):
     
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
+            
+            system_prompt = construct_system_prompt()
+            
             if st.session_state.selected_model.startswith("gemini"):
                 response = call_gemini_api(
                     st.session_state.messages,
+                    system_prompt=system_prompt,
                     temperature=st.session_state.get("temperature", 0.7),
                     top_p=st.session_state.get("top_p", 0.9),
                     top_k=st.session_state.get("top_k", 40),
                     max_tokens=st.session_state.get("max_tokens", 1000)
                 )
             else:
+                messages_with_system = []
+                if system_prompt:
+                    messages_with_system.append({"role": "system", "content": system_prompt})
+                messages_with_system.extend(st.session_state.messages)
+                
                 response = call_llama3_api(
-                    st.session_state.messages,
+                    messages_with_system,
                     temperature=st.session_state.get("temperature", 0.7),
                     top_p=st.session_state.get("top_p", 1.0),
                     max_tokens=st.session_state.get("max_tokens", 1000)
